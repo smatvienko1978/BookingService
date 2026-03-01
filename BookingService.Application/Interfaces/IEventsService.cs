@@ -8,11 +8,12 @@ namespace BookingService.Application.Interfaces;
 public interface IEventsService
 {
     /// <summary>
-    /// Retrieves all published events available for booking.
+    /// Retrieves published events available for booking with pagination.
     /// </summary>
+    /// <param name="pagination">Pagination parameters.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A collection of published events with availability information.</returns>
-    Task<IEnumerable<EventSummaryDto>> GetPublished(CancellationToken cancellationToken = default);
+    /// <returns>A paginated collection of published events with availability information.</returns>
+    Task<PaginatedResponse<EventSummaryDto>> GetPublished(PaginationRequest pagination, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retrieves a specific published event by its ID.

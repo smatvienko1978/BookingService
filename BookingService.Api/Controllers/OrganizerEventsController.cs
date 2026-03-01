@@ -60,4 +60,35 @@ public class OrganizerEventsController(IOrganizerEventsService organizerEventsSe
         var deleted = await _service.Delete(id, organizerId, cancellationToken);
         return deleted ? NoContent() : NotFound();
     }
+
+    /// <summary>
+    /// Publishes a draft event, making it visible to customers for booking.
+    /// Only events in Draft status can be published.
+    /// </summary>
+    [HttpPost("{id}/publish")]
+    public async Task<IActionResult> PublishEvent(Guid id, CancellationToken cancellationToken)
+    {
+        var organizerId = User.GetUserId();
+        var published = await _service.Publish(id, organizerId, cancellationToken);
+        
+        if (!published)
+            return BadRequest("Event not found, not owned by you, or not in Draft status.");
+        
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Cancels an event. Cancelled events are no longer visible to customers.
+    /// </summary>
+    [HttpPost("{id}/cancel")]
+    public async Task<IActionResult> CancelEvent(Guid id, CancellationToken cancellationToken)
+    {
+        var organizerId = User.GetUserId();
+        var cancelled = await _service.Cancel(id, organizerId, cancellationToken);
+        
+        if (!cancelled)
+            return BadRequest("Event not found, not owned by you, or already cancelled.");
+        
+        return NoContent();
+    }
 }

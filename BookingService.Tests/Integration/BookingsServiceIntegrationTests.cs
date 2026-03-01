@@ -1,3 +1,4 @@
+using BookingService.Application.DTOs;
 using BookingService.Application.Interfaces;
 using BookingService.Application.Services;
 using BookingService.Core.Entities;
@@ -148,7 +149,7 @@ public class BookingsServiceIntegrationTests : IDisposable
 
         await _sut.Confirm(booking.Id);
 
-        var confirmed = await _sut.GetById(booking.Id);
+        var confirmed = await _sut.GetById(booking.Id, _testUser.Id);
         confirmed!.Status.Should().Be("Confirmed");
         _vipTicket.SoldQuantity.Should().Be(3);
         _vipTicket.ReservedQuantity.Should().Be(0);
@@ -199,10 +200,12 @@ public class BookingsServiceIntegrationTests : IDisposable
         await _sut.Create(_testUser.Id, request);
         await _sut.Create(_testUser.Id, request);
 
-        var bookings = await _sut.GetByUser(_testUser.Id);
+        var pagination = new PaginationRequest(1, 10);
+        var result = await _sut.GetByUser(_testUser.Id, pagination);
 
-        bookings.Should().HaveCount(2);
-        bookings.Should().AllSatisfy(b => b.EventId.Should().Be(_testEvent.Id));
+        result.Items.Should().HaveCount(2);
+        result.Items.Should().AllSatisfy(b => b.EventId.Should().Be(_testEvent.Id));
+        result.TotalCount.Should().Be(2);
     }
 
     public void Dispose()

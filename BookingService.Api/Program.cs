@@ -1,9 +1,30 @@
+// =============================================================================
+// BookingService API - Entry Point
+// =============================================================================
+// Event ticket booking platform API built with:
+// - ASP.NET Core 9.0 (Web API)
+// - Entity Framework Core 9 (SQL Server)
+// - .NET Aspire (Orchestration & Observability)
+// - JWT Bearer Authentication
+// - FluentValidation (Request validation)
+// 
+// Architecture: Clean Architecture with layers:
+// - Api (this project): HTTP endpoints, authentication
+// - Application: Business logic, services, DTOs
+// - Core: Domain entities, enums
+// - Infrastructure: Data access (EF Core)
+// - Worker: Background services (runs in-process)
+// =============================================================================
+
 using System.Text;
 using BookingService.Worker;
 using BookingService.Application.Interfaces;
 using BookingService.Application.Services;
+using BookingService.Application.Validators;
 using BookingService.Core.Entities;
 using BookingService.Infrastructure.Data;
+using FluentValidation;
+using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -16,6 +37,12 @@ builder.AddServiceDefaults();
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// Register FluentValidation validators from the Application assembly
+// This enables automatic request validation before reaching controllers
+builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddValidatorsFromAssemblyContaining<CreateBookingRequestValidator>();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -93,21 +120,33 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-// Background services
+// =============================================================================
+// Background Services
+// =============================================================================
+// BookingExpiryService: Polls for expired pending bookings and releases tickets
+// Runs in-process as a hosted service (single deployable unit)
 builder.Services.AddHostedService<BookingExpiryService>();
 
-// Time provider
+// =============================================================================
+// Time Provider (for testability)
+// =============================================================================
+// ITimeProvider abstraction allows mocking time in unit tests
+// Production uses SystemTimeProvider which returns real UTC time
 builder.Services.AddSingleton<ITimeProvider, SystemTimeProvider>();
 
-// Application services
-builder.Services.AddScoped<IBookingPolicyService, BookingPolicyService>();
-builder.Services.AddScoped<IBookingsService, BookingsService>();
-builder.Services.AddScoped<IEventsService, EventsService>();
-builder.Services.AddScoped<IOrganizerEventsService, OrganizerEventsService>();
-builder.Services.AddScoped<IAuthService, AuthService>();
-builder.Services.AddScoped<IUsersService, UsersService>();
+// =============================================================================
+// Application Services (Business Logic Layer)
+// =============================================================================
+// Scoped lifetime: One instance per HTTP request
+// This ensures proper DbContext lifecycle and transaction handling
+builder.Services.AddScoped<IBookingPolicyService, BookingPolicyService>();  // Refund policy evaluation
+builder.Services.AddScoped<IBookingsService, BookingsService>();            // Booking CRUD operations
+builder.Services.AddScoped<IEventsService, EventsService>();                // Public event browsing
+builder.Services.AddScoped<IOrganizerEventsService, OrganizerEventsService>(); // Organizer event management
+builder.Services.AddScoped<IAuthService, AuthService>();                    // Authentication (login/register)
+builder.Services.AddScoped<IUsersService, UsersService>();                  // User management (admin)
 
-// Database initializer
+// Database initializer (applies migrations and seeds data)
 builder.Services.AddScoped<DatabaseInitializer>();
 
 var app = builder.Build();

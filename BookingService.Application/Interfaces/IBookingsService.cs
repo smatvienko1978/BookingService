@@ -35,18 +35,20 @@ public interface IBookingsService
     Task<BookingDto> Cancel(Guid bookingId, Guid userId, string? reason, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retrieves a booking by its ID.
+    /// Retrieves a booking by its ID, with ownership verification.
     /// </summary>
     /// <param name="bookingId">The ID of the booking.</param>
+    /// <param name="userId">The ID of the user requesting the booking (for ownership check).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The booking details, or null if not found.</returns>
-    Task<BookingDto?> GetById(Guid bookingId, CancellationToken cancellationToken = default);
+    /// <returns>The booking details, or null if not found or not owned by user.</returns>
+    Task<BookingDto?> GetById(Guid bookingId, Guid userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retrieves all bookings for a specific user.
+    /// Retrieves bookings for a specific user with pagination support.
     /// </summary>
     /// <param name="userId">The ID of the user.</param>
+    /// <param name="pagination">Pagination parameters.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A collection of the user's bookings.</returns>
-    Task<IEnumerable<BookingDto>> GetByUser(Guid userId, CancellationToken cancellationToken = default);
+    /// <returns>A paginated collection of the user's bookings.</returns>
+    Task<PaginatedResponse<BookingDto>> GetByUser(Guid userId, PaginationRequest pagination, CancellationToken cancellationToken = default);
 }

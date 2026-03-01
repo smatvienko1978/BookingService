@@ -10,14 +10,28 @@ public class EventsService(BookingDbContext context) : IEventsService
 {
     private readonly BookingDbContext _context = context ?? throw new ArgumentNullException(nameof(context));
 
-    public async Task<IEnumerable<EventSummaryDto>> GetPublished(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Retrieves published events with pagination.
+    /// Events are ordered by start date (soonest first) to show upcoming events prominently.
+    /// Only published events are returned - draft and cancelled events are hidden from customers.
+    /// </summary>
+    public async Task<PaginatedResponse<EventSummaryDto>> GetPublished(PaginationRequest pagination, CancellationToken cancellationToken = default)
     {
-        var events = await _context.Events
-            .Include(e => e.TicketTypes)
+        var query = _context.Events
             .Where(e => e.Status == EventStatus.Published)
+            .OrderBy(e => e.StartAt); // Soonest events first
+
+        // Get total count for pagination metadata
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        // Apply pagination and fetch data with related ticket types
+        var events = await query
+            .Skip(pagination.Skip)
+            .Take(pagination.ValidatedPageSize)
+            .Include(e => e.TicketTypes)
             .ToListAsync(cancellationToken);
 
-        return events.Select(e => new EventSummaryDto(
+        var items = events.Select(e => new EventSummaryDto(
             e.Id,
             e.Title,
             e.Location,
@@ -35,6 +49,8 @@ public class EventsService(BookingDbContext context) : IEventsService
                 ))
                 .ToList()
         )).ToList();
+
+        return PaginatedResponse<EventSummaryDto>.Create(items, totalCount, pagination);
     }
 
     public async Task<EventDetailDto?> GetById(Guid eventId, CancellationToken cancellationToken = default)

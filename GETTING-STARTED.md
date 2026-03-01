@@ -126,23 +126,28 @@ BookingService/
 - `POST /api/auth/register` - Register new user
 - `POST /api/auth/login` - Login and get JWT token
 
-### Events (Public)
-- `GET /api/events` - List published events
-- `GET /api/events/{id}` - Get event details
+### Events (Public - No authentication required)
+- `GET /api/events` - List published events (paginated: `?page=1&pageSize=10`)
+- `GET /api/events/{id}` - Get event details with ticket availability
 
-### Bookings (Authenticated)
-- `POST /api/bookings` - Create booking
-- `GET /api/bookings/{id}` - Get booking details
-- `POST /api/bookings/{id}/confirm` - Confirm booking
-- `POST /api/bookings/{id}/cancel` - Cancel booking
+### Bookings (Authenticated - Customer/Organizer/Admin)
+- `GET /api/bookings` - List user's bookings (paginated: `?page=1&pageSize=10`)
+- `GET /api/bookings/{id}` - Get booking details (own bookings only)
+- `POST /api/bookings` - Create new booking
+- `POST /api/bookings/{id}/confirm` - Confirm pending booking
+- `POST /api/bookings/{id}/cancel` - Cancel booking (with optional reason in body)
 
-### Organizer Events (Organizer role)
+### Organizer Events (Organizer role required)
 - `GET /api/organizer/events` - List own events
-- `POST /api/organizer/events` - Create event
-- `PUT /api/organizer/events/{id}` - Update event
-- `POST /api/organizer/events/{id}/publish` - Publish event
+- `GET /api/organizer/events/{id}` - Get event details
+- `GET /api/organizer/events/{id}/stats` - Get event statistics (revenue, ticket sales)
+- `POST /api/organizer/events` - Create new event (starts in Draft status)
+- `PUT /api/organizer/events/{id}` - Update event details
+- `POST /api/organizer/events/{id}/publish` - Publish draft event (makes it visible to customers)
+- `POST /api/organizer/events/{id}/cancel` - Cancel event
+- `DELETE /api/organizer/events/{id}` - Delete event
 
-### Users (Admin role)
+### Users (Admin role required)
 - `GET /api/users` - List all users
 - `GET /api/users/{id}` - Get user details
 - `PUT /api/users/{id}` - Update user

@@ -9,6 +9,19 @@ using Microsoft.Extensions.Options;
 
 namespace BookingService.Application.Services;
 
+/// <summary>
+/// Core service for managing ticket bookings.
+/// Orchestrates the booking lifecycle: creation, confirmation, cancellation.
+/// 
+/// Key responsibilities:
+/// - Creating pending bookings with ticket reservations
+/// - Confirming bookings (simulates payment completion)
+/// - Cancelling bookings with policy-based refund evaluation
+/// - Retrieving booking history for users
+/// 
+/// Uses ITimeProvider for testability - all time-dependent operations
+/// use injected time instead of DateTime.Now.
+/// </summary>
 public class BookingsService(
     BookingDbContext context,
     IOptions<BookingOptions> options,
@@ -20,6 +33,19 @@ public class BookingsService(
     private readonly IBookingPolicyService _policyService = policyService ?? throw new ArgumentNullException(nameof(policyService));
     private readonly ITimeProvider _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
+    /// <summary>
+    /// Creates a new pending booking for the specified user.
+    /// 
+    /// Process:
+    /// 1. Validates user and event exist
+    /// 2. Creates booking with expiration time (configurable timeout)
+    /// 3. For each requested ticket type, reserves the specified quantity
+    /// 4. Calculates total amount from all items
+    /// 5. Persists to database
+    /// 
+    /// The booking starts in Pending status and must be confirmed before expiration.
+    /// If not confirmed in time, the background worker will expire it and release tickets.
+    /// </summary>
     public async Task<BookingDto> Create(Guid userId, CreateBookingRequest request, CancellationToken cancellationToken = default)
     {
         if (request.Items.Count == 0)
@@ -28,16 +54,20 @@ public class BookingsService(
         var user = await _context.Users.FindAsync([userId], cancellationToken)
             ?? throw new InvalidOperationException($"User '{userId}' not found.");
 
+        // Load event with ticket types for availability checking
         var evt = await _context.Events
             .Include(e => e.TicketTypes)
             .FirstOrDefaultAsync(e => e.Id == request.EventId, cancellationToken)
             ?? throw new InvalidOperationException($"Event '{request.EventId}' not found.");
 
+        // Calculate expiration time based on configured timeout
         var now = _timeProvider.UtcNow;
         var expiresAt = now.AddMinutes(_options.TimeoutMinutes);
 
         var booking = new Booking(userId, request.EventId, expiresAt, user, evt);
 
+        // Add each requested ticket type to the booking
+        // This will reserve tickets and throw if not enough available
         foreach (var item in request.Items)
         {
             var ticketType = evt.TicketTypes.FirstOrDefault(t => t.Id == item.TicketTypeId)
@@ -51,22 +81,40 @@ public class BookingsService(
         return MapToDto(booking);
     }
 
-    public async Task<IEnumerable<BookingDto>> GetByUser(Guid userId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Retrieves user's bookings with pagination.
+    /// Results are ordered by creation date (newest first) for better UX.
+    /// </summary>
+    public async Task<PaginatedResponse<BookingDto>> GetByUser(Guid userId, PaginationRequest pagination, CancellationToken cancellationToken = default)
     {
-        var bookings = await _context.Bookings
+        var query = _context.Bookings
             .Where(x => x.UserId == userId)
+            .OrderByDescending(b => b.CreatedAt); // Most recent first
+
+        // Get total count for pagination metadata
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        // Apply pagination and fetch data
+        var bookings = await query
+            .Skip(pagination.Skip)
+            .Take(pagination.ValidatedPageSize)
             .Include(b => b.Event)
             .Include(b => b.Items)
             .Include(b => b.Refund)
             .ToListAsync(cancellationToken);
 
-        return [.. bookings.Select(MapToDto)];
+        var items = bookings.Select(MapToDto).ToList();
+        return PaginatedResponse<BookingDto>.Create(items, totalCount, pagination);
     }
 
-    public async Task<BookingDto?> GetById(Guid bookingId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Retrieves a booking by ID with ownership verification.
+    /// Users can only view their own bookings for security/privacy.
+    /// </summary>
+    public async Task<BookingDto?> GetById(Guid bookingId, Guid userId, CancellationToken cancellationToken = default)
     {
         var booking = await _context.Bookings
-            .Where(b => b.Id == bookingId)
+            .Where(b => b.Id == bookingId && b.UserId == userId) // Ownership check
             .Include(b => b.Event)
             .Include(b => b.Items)
             .Include(b => b.Refund)
@@ -75,8 +123,16 @@ public class BookingsService(
         return booking == null ? null : MapToDto(booking);
     }
 
+    /// <summary>
+    /// Confirms a pending booking, converting reserved tickets to sold.
+    /// This simulates successful payment completion.
+    /// 
+    /// In a real system, this would be called after payment gateway confirmation.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">If booking not found, not pending, or expired.</exception>
     public async Task Confirm(Guid bookingId, CancellationToken cancellationToken = default)
     {
+        // Load booking with all related data needed for confirmation
         var booking = await _context.Bookings
             .Include(b => b.Items)
             .Include(b => b.Event)
@@ -93,11 +149,24 @@ public class BookingsService(
         if (booking.ExpiresAt < now)
             throw new InvalidOperationException("Booking expired.");
 
+        // Confirm moves tickets from Reserved to Sold state
         booking.Confirm(now);
 
         await _context.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Cancels a booking and processes refund based on policy.
+    /// 
+    /// Cancellation policy (evaluated by BookingPolicyService):
+    /// - Pending bookings: Always allowed, no refund (no payment made)
+    /// - Confirmed bookings >24h before event: Full refund
+    /// - Confirmed bookings ≤24h before event: Not allowed (no refund)
+    /// 
+    /// The 24-hour cutoff is configurable via BookingOptions.RefundCutoffHours.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">If user doesn't own the booking.</exception>
+    /// <exception cref="InvalidOperationException">If cancellation not allowed by policy.</exception>
     public async Task<BookingDto> Cancel(Guid bookingId, Guid userId, string? reason, CancellationToken cancellationToken = default)
     {
         var booking = await _context.Bookings
@@ -106,9 +175,11 @@ public class BookingsService(
                 .ThenInclude(e => e.TicketTypes)
             .FirstOrDefaultAsync(b => b.Id == bookingId, cancellationToken) ?? throw new InvalidOperationException($"Booking '{bookingId}' not found.");
         
+        // Security: Users can only cancel their own bookings
         if (booking.UserId != userId)
             throw new UnauthorizedAccessException("You can only cancel your own bookings.");
 
+        // Evaluate cancellation policy (determines if allowed and refund amount)
         var result = _policyService.EvaluateCancellation(booking, booking.Event);
 
         if (!result.Allowed)
@@ -117,6 +188,7 @@ public class BookingsService(
         var now = _timeProvider.UtcNow;
         booking.Cancel(now, reason ?? "User requested cancellation");
 
+        // Create refund record if applicable (confirmed booking cancelled >24h before event)
         if (result.RefundAmount > 0)
         {
             var refund = new Refund
@@ -126,7 +198,7 @@ public class BookingsService(
                 Amount = result.RefundAmount,
                 CreatedAt = now,
                 Reason = reason ?? "Cancellation - full refund (more than 24h before event)",
-                Status = RefundStatus.Completed
+                Status = RefundStatus.Completed  // In real system, would be Pending until processed
             };
             _context.Refunds.Add(refund);
             booking.Refund = refund;

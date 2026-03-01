@@ -19,6 +19,11 @@
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="9.0.5" />
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="6.6.2" />
 
+    <!-- Validation -->
+    <PackageVersion Include="FluentValidation" Version="11.11.0" />
+    <PackageVersion Include="FluentValidation.AspNetCore" Version="11.3.0" />
+    <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+
     <!-- Microsoft Extensions -->
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.3" />
 

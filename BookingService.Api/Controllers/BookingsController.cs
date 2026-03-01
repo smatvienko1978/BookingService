@@ -14,18 +14,30 @@ public class BookingsController(IBookingsService bookingsService) : ControllerBa
 {
     private readonly IBookingsService _service = bookingsService ?? throw new ArgumentNullException(nameof(bookingsService));
 
+    /// <summary>
+    /// Gets all bookings for the authenticated user with pagination.
+    /// Results are ordered by creation date (newest first).
+    /// </summary>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<BookingDto>>> GetUserBookings(CancellationToken cancellationToken)
+    public async Task<ActionResult<PaginatedResponse<BookingDto>>> GetUserBookings(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
     {
         var userId = User.GetUserId();
-        var bookings = await _service.GetByUser(userId, cancellationToken);
+        var pagination = new PaginationRequest(page, pageSize);
+        var bookings = await _service.GetByUser(userId, pagination, cancellationToken);
         return Ok(bookings);
     }
 
+    /// <summary>
+    /// Gets a specific booking by ID. Users can only view their own bookings.
+    /// </summary>
     [HttpGet("{id}")]
     public async Task<ActionResult<BookingDto>> GetBooking(Guid id, CancellationToken cancellationToken)
     {
-        var booking = await _service.GetById(id, cancellationToken);
+        var userId = User.GetUserId();
+        var booking = await _service.GetById(id, userId, cancellationToken);
         return booking == null ? NotFound() : Ok(booking);
     }
 

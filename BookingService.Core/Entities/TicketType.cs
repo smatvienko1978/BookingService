@@ -1,7 +1,21 @@
 namespace BookingService.Core.Entities;
 
 /// <summary>
-/// Represents a type of ticket available for an event (e.g., VIP, General Admission).
+/// Represents a type of ticket available for an event (e.g., VIP, Regular, Student).
+/// 
+/// This entity implements the core ticket inventory management logic using a three-state model:
+/// - Available: Tickets that can be purchased (Capacity - Reserved - Sold)
+/// - Reserved: Tickets held for pending bookings (not yet paid)
+/// - Sold: Tickets for confirmed bookings (paid)
+/// 
+/// The state transitions are:
+/// - Reserve(): Available → Reserved (when booking is created)
+/// - Confirm(): Reserved → Sold (when booking is confirmed/paid)
+/// - Release(): Reserved → Available (when pending booking expires or is cancelled)
+/// - ReturnSold(): Sold → Available (when confirmed booking is cancelled with refund)
+/// 
+/// Concurrency is handled via RowVersion (optimistic locking) to prevent overselling
+/// when multiple users try to book the last available tickets simultaneously.
 /// </summary>
 public class TicketType
 {

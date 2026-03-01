@@ -270,6 +270,25 @@ Environment Variables  →  Aspire Parameters  →  User Secrets (dev only)
 - In-memory database for fast execution
 - Test full request/response cycle
 
+## API Features
+
+### Input Validation
+- **FluentValidation** for declarative request validation
+- Validators in `BookingService.Application.Validators`
+- Automatic validation via `FluentValidationAutoValidation`
+- Returns 400 Bad Request with detailed error messages
+
+### Pagination
+- All list endpoints support pagination
+- Query parameters: `?page=1&pageSize=10`
+- Response includes: `Items`, `Page`, `PageSize`, `TotalCount`, `TotalPages`, `HasNextPage`, `HasPreviousPage`
+- Maximum page size: 100 (enforced server-side)
+
+### Security
+- Ownership checks on booking retrieval (users can only see their own bookings)
+- Role-based authorization (Customer, Organizer, Admin)
+- JWT token validation with configurable expiration
+
 ## Future Considerations
 
 ### Scalability Path
@@ -288,6 +307,7 @@ Environment Variables  →  Aspire Parameters  →  User Secrets (dev only)
 
 The architecture prioritizes:
 - **Maintainability**: Clear separation of concerns, testable components
-- **Security**: No hardcoded secrets, JWT authentication
+- **Security**: No hardcoded secrets, JWT authentication, ownership checks
 - **Developer Experience**: Aspire for easy setup, comprehensive documentation
 - **Flexibility**: Abstractions allow future changes without major rewrites
+- **Reliability**: Input validation, pagination, proper error handling

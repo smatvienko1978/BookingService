@@ -60,4 +60,22 @@ public interface IOrganizerEventsService
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if the event was deleted, false if not found or not owned by organizer.</returns>
     Task<bool> Delete(Guid eventId, Guid organizerId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Publishes a draft event, making it visible to customers for booking.
+    /// </summary>
+    /// <param name="eventId">The ID of the event to publish.</param>
+    /// <param name="organizerId">The ID of the organizer.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if the event was published, false if not found, not owned, or not in Draft status.</returns>
+    Task<bool> Publish(Guid eventId, Guid organizerId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Cancels a published event.
+    /// </summary>
+    /// <param name="eventId">The ID of the event to cancel.</param>
+    /// <param name="organizerId">The ID of the organizer.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if the event was cancelled, false if not found or not owned by organizer.</returns>
+    Task<bool> Cancel(Guid eventId, Guid organizerId, CancellationToken cancellationToken = default);
 }

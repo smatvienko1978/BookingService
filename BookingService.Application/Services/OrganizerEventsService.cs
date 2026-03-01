@@ -146,6 +146,53 @@ public class OrganizerEventsService(BookingDbContext context, ITimeProvider time
         return true;
     }
 
+    /// <summary>
+    /// Publishes a draft event, making it available for customer bookings.
+    /// Only events in Draft status can be published.
+    /// </summary>
+    public async Task<bool> Publish(Guid eventId, Guid organizerId, CancellationToken cancellationToken = default)
+    {
+        var evt = await _context.Events
+            .FirstOrDefaultAsync(e => e.Id == eventId && e.OrganizerId == organizerId, cancellationToken);
+
+        if (evt == null)
+            return false;
+
+        // Only draft events can be published
+        if (evt.Status != EventStatus.Draft)
+            return false;
+
+        evt.Status = EventStatus.Published;
+        evt.UpdatedAt = _timeProvider.UtcNow;
+
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// Cancels an event. Cancelled events are no longer visible to customers.
+    /// Note: In a production system, this should also handle existing bookings
+    /// (e.g., auto-cancel and refund all confirmed bookings).
+    /// </summary>
+    public async Task<bool> Cancel(Guid eventId, Guid organizerId, CancellationToken cancellationToken = default)
+    {
+        var evt = await _context.Events
+            .FirstOrDefaultAsync(e => e.Id == eventId && e.OrganizerId == organizerId, cancellationToken);
+
+        if (evt == null)
+            return false;
+
+        // Cannot cancel an already cancelled event
+        if (evt.Status == EventStatus.Cancelled)
+            return false;
+
+        evt.Status = EventStatus.Cancelled;
+        evt.UpdatedAt = _timeProvider.UtcNow;
+
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
     private static EventDetailDto MapToDetailDto(Event evt) => new(
         evt.Id,
         evt.Title,
