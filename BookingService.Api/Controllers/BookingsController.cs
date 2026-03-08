@@ -52,33 +52,15 @@ public class BookingsController(IBookingsService bookingsService) : ControllerBa
     [HttpPost("{id}/confirm")]
     public async Task<IActionResult> ConfirmBooking(Guid id, CancellationToken cancellationToken)
     {
-        try
-        {
-            await _service.Confirm(id, cancellationToken);
-            return NoContent();
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(ex.Message);
-        }
+        await _service.Confirm(id, cancellationToken);
+        return NoContent();
     }
 
     [HttpPost("{id}/cancel")]
     public async Task<ActionResult<BookingDto>> CancelBooking(Guid id, [FromBody] CancelBookingRequest? request, CancellationToken cancellationToken)
     {
         var userId = User.GetUserId();
-        try
-        {
-            var booking = await _service.Cancel(id, userId, request?.Reason, cancellationToken);
-            return Ok(booking);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(ex.Message);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Forbid();
-        }
+        var booking = await _service.Cancel(id, userId, request?.Reason, cancellationToken);
+        return Ok(booking);
     }
 }

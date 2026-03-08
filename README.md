@@ -1,243 +1,156 @@
-# BookingService - Getting Started Guide
+# BookingService
 
-Event ticket booking system built with ASP.NET Core 9.0, Entity Framework Core, and .NET Aspire.
+Event ticket booking system built with **ASP.NET Core 9**, **Entity Framework Core**, and **.NET Aspire**.
 
-## Prerequisites
+## Setup summary
 
-### Required
-- [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (for containerized deployment)
+1. **Clone** the repository and open the solution.
+2. **Set the JWT secret** (required):
+   - With Aspire: `$env:Parameters__jwt_key = "YourSecretKey_MinimumLength32Characters!"`
+   - Without Aspire: `$env:Jwt__Key = "YourSecretKey_MinimumLength32Characters!"`
+3. **Run**:
+   - **Option 1 (recommended):** From `BookingService.AppHost`, run `dotnet run`. Aspire starts the API and a SQL Server container; the dashboard opens at `https://localhost:17178`.
+   - **Option 2:** From `BookingService.Api`, run `dotnet run`. Uses LocalDB (see connection string in `appsettings.json`).
 
-### Optional
-- [Visual Studio 2022](https://visualstudio.microsoft.com/) (17.9+) or [VS Code](https://code.visualstudio.com/)
-- [Azure Data Studio](https://azure.microsoft.com/products/data-studio/) (for database management)
+**Prerequisites:** [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0). Docker is required only for Option 1 (Aspire).
 
-## Quick Start
+**Test users** (seeded in Development):
 
-### Option 1: Run with Aspire (Recommended)
-
-This is the easiest way to run the application. Aspire will automatically start a SQL Server container.
-
-```powershell
-# 1. Clone and navigate to the project
-cd BookingService
-
-# 2. Run the setup script (installs Aspire workload if needed)
-.\setup.ps1
-
-# 3. Set the JWT secret (required - Aspire will prompt if not set)
-$env:Parameters__jwt_key = "YourSecretKey_MinimumLength32Characters!"
-
-# 4. Start the application
-cd BookingService.AppHost
-dotnet run
-```
-
-The Aspire Dashboard will open automatically at `https://localhost:17178`. From there you can:
-- View the API endpoint URL
-- Monitor logs, traces, and metrics
-- Access the SQL Server container
-
-**Default test users** (seeded automatically in Development):
 | Email | Password | Role |
 |-------|----------|------|
 | admin@bookingservice.com | Password123! | Admin |
 | organizer1@bookingservice.com | Password123! | Organizer |
-| organizer2@bookingservice.com | Password123! | Organizer |
 | customer1@bookingservice.com | Password123! | Customer |
-| customer2@bookingservice.com | Password123! | Customer |
 
-### Option 2: Run without Docker (LocalDB)
+---
 
-Use this if you don't have Docker or prefer SQL Server LocalDB.
+## Architecture
 
-```powershell
-# 1. Navigate to API project
-cd BookingService.Api
+High-level flow: **API → Application → Infrastructure → Database**. Controllers call Application services; services use EF Core DbContext (no separate repository layer). The booking expiry worker runs in-process as a hosted service.
 
-# 2. Set the JWT secret (required)
-$env:Jwt__Key = "YourSecretKey_MinimumLength32Characters!"
-
-# 3. Run the application
-dotnet run
+```mermaid
+flowchart TB
+  API[API]
+  App[Application]
+  Infra[Infrastructure]
+  DB[(Database)]
+  API --> App
+  App --> Infra
+  Infra --> DB
 ```
 
-The API will be available at:
-- Swagger UI: https://localhost:7292/swagger
-- HTTP: http://localhost:5065
+For full detail (layers, domain exceptions, concurrency, logging, decisions), see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
-**Note:** LocalDB connection string is pre-configured in `appsettings.json`.
+### Domain entities
+
+- **User**, **Event**, **TicketType**: Users book tickets for events; each event has one or more ticket types with capacity and price.
+- **Booking**, **BookingItem**: A booking belongs to a user and an event and contains one or more items (ticket type + quantity). Lifecycle: **Pending** → **Confirmed** or **Cancelled** or **Expired**.
+- **Refund**: Created when a confirmed booking is cancelled and a refund is allowed (e.g. more than 24h before event).
+
+---
+
+## API endpoints
+
+### Authentication
+- `POST /api/auth/register` – Register
+- `POST /api/auth/login` – Login and get JWT
+
+### Events (public)
+- `GET /api/events` – List published events (paginated)
+- `GET /api/events/{id}` – Event details with ticket availability
+
+### Bookings (authenticated)
+- `GET /api/bookings` – List current user’s bookings (paginated)
+- `GET /api/bookings/{id}` – Get booking (own only)
+- `POST /api/bookings` – Create booking
+- `POST /api/bookings/{id}/confirm` – Confirm pending booking
+- `POST /api/bookings/{id}/cancel` – Cancel booking (optional reason in body)
+
+### Organizer events (Organizer role)
+- `GET /api/organizer/events` – List own events
+- `GET /api/organizer/events/{id}` – Get event
+- `GET /api/organizer/events/{id}/stats` – Stats (revenue, sales)
+- `POST /api/organizer/events` – Create event (Draft)
+- `PUT /api/organizer/events/{id}` – Update event
+- `POST /api/organizer/events/{id}/publish` – Publish
+- `POST /api/organizer/events/{id}/cancel` – Cancel event
+- `DELETE /api/organizer/events/{id}` – Delete event
+
+### Users (Admin role)
+- `GET /api/users` – List users
+- `GET /api/users/{id}` – Get user
+- `POST /api/users` – Create user
+- `PUT /api/users/{id}` – Update user
+- `DELETE /api/users/{id}` – Delete user
+
+### Pagination
+
+List endpoints support query parameters: **`?page=1&pageSize=20`**. Response shape includes `Items`, `Page`, `PageSize`, `TotalCount`, `TotalPages`, `HasNextPage`, `HasPreviousPage`.
+
+### Error format
+
+Errors are returned as **RFC 7807 ProblemDetails** (JSON with `type`, `title`, `detail`, `status`, `instance`, and optional `traceId` / `errorCode`).
+
+| Status | Meaning |
+|--------|--------|
+| **400** | Validation or business rule failure (e.g. invalid booking state) |
+| **403** | Forbidden (e.g. not owner of booking) |
+| **404** | Resource not found |
+| **409** | Conflict (e.g. concurrency, capacity exceeded, duplicate email) |
+| **500** | Server error (detail minimized in production) |
+
+---
 
 ## Configuration
 
-### Secrets Management
+### JWT and secrets
+- **Aspire:** Set `Parameters__jwt_key` (e.g. via `$env:Parameters__jwt_key`) before running AppHost.
+- **Standalone:** Set `Jwt__Key` or use `dotnet user-secrets` in `BookingService.Api`.
 
-The JWT signing key is **not** stored in configuration files for security. Configure it using environment variables:
-
-#### When running with Aspire (AppHost)
-```powershell
-# Set before running dotnet run in AppHost folder
-$env:Parameters__jwt_key = "YourSecretKey_MinimumLength32Characters!"
-```
-
-If not set, Aspire will prompt for the secret value when starting.
-
-#### When running standalone (without Aspire)
-```powershell
-# PowerShell - set before running dotnet run in Api folder
-$env:Jwt__Key = "YourSecretKey_MinimumLength32Characters!"
-
-# Or use .NET User Secrets (persists across sessions)
-cd BookingService.Api
-dotnet user-secrets init
-dotnet user-secrets set "Jwt:Key" "YourSecretKey_MinimumLength32Characters!"
-```
-
-### Application Settings
-
-Other configuration options in `BookingService.Api/appsettings.json`:
+### Application settings (e.g. in `appsettings.json`)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `Booking:TimeoutMinutes` | 15 | Time before pending bookings expire |
-| `Booking:RefundCutoffHours` | 24 | Hours before event when refunds are no longer allowed |
-| `Booking:ExpiryPollIntervalMinutes` | 1 | How often to check for expired bookings |
-| `Jwt:Issuer` | BookingService | JWT token issuer |
-| `Jwt:Audience` | BookingServiceClients | JWT token audience |
-| `Jwt:ExpiresInMinutes` | 60 | JWT token lifetime |
+| `Booking:TimeoutMinutes` | 15 | Pending booking expiry (minutes) |
+| `Booking:RefundCutoffHours` | 24 | Refund allowed only if cancelled more than this many hours before event |
+| `Booking:ExpiryPollIntervalMinutes` | 1 | How often the worker checks for expired bookings |
+| `Jwt:Issuer` / `Jwt:Audience` / `Jwt:ExpiresInMinutes` | – | JWT token settings |
 
-## Project Structure
-
-```
-BookingService/
-├── BookingService.AppHost/        # Aspire orchestration host
-├── BookingService.ServiceDefaults/# Shared Aspire configuration
-├── BookingService.Api/            # ASP.NET Core Web API
-├── BookingService.Application/    # Business logic and services
-├── BookingService.Core/           # Domain entities and interfaces
-├── BookingService.Infrastructure/ # Data access (EF Core)
-├── BookingService.Worker/         # Background services
-└── BookingService.Tests/          # Unit and integration tests
-```
-
-## API Endpoints
-
-### Authentication
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login and get JWT token
-
-### Events (Public - No authentication required)
-- `GET /api/events` - List published events (paginated: `?page=1&pageSize=10`)
-- `GET /api/events/{id}` - Get event details with ticket availability
-
-### Bookings (Authenticated - Customer/Organizer/Admin)
-- `GET /api/bookings` - List user's bookings (paginated: `?page=1&pageSize=10`)
-- `GET /api/bookings/{id}` - Get booking details (own bookings only)
-- `POST /api/bookings` - Create new booking
-- `POST /api/bookings/{id}/confirm` - Confirm pending booking
-- `POST /api/bookings/{id}/cancel` - Cancel booking (with optional reason in body)
-
-### Organizer Events (Organizer role required)
-- `GET /api/organizer/events` - List own events
-- `GET /api/organizer/events/{id}` - Get event details
-- `GET /api/organizer/events/{id}/stats` - Get event statistics (revenue, ticket sales)
-- `POST /api/organizer/events` - Create new event (starts in Draft status)
-- `PUT /api/organizer/events/{id}` - Update event details
-- `POST /api/organizer/events/{id}/publish` - Publish draft event (makes it visible to customers)
-- `POST /api/organizer/events/{id}/cancel` - Cancel event
-- `DELETE /api/organizer/events/{id}` - Delete event
-
-### Users (Admin role required)
-- `GET /api/users` - List all users
-- `GET /api/users/{id}` - Get user details
-- `PUT /api/users/{id}` - Update user
-- `DELETE /api/users/{id}` - Delete user
+---
 
 ## Development
 
-### Running Tests
-
+### Tests
 ```powershell
 cd BookingService
 dotnet test
 ```
 
-### Database Migrations
-
-Migrations are applied automatically on startup. To create a new migration:
-
+### Migrations
+Migrations run on startup. To add a new one:
 ```powershell
-cd BookingService
 dotnet ef migrations add MigrationName --project BookingService.Infrastructure --startup-project BookingService.Api
 ```
 
-### Health Checks
+### Health
+With Aspire: `/health`, `/alive`. See dashboard for logs and metrics.
 
-When running with Aspire, health endpoints are available:
-- `/health` - Overall health status
-- `/alive` - Liveness probe
+---
 
 ## Deployment
 
-### Docker Compose (Production)
+Use a SQL Server instance and set:
 
-Create a `docker-compose.yml`:
+- `ConnectionStrings__BookingDb` – Connection string
+- `Jwt__Key` – JWT signing key (min 32 characters)
+- `ASPNETCORE_ENVIRONMENT=Production`
 
-```yaml
-version: '3.8'
-services:
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    environment:
-      - ACCEPT_EULA=Y
-      - SA_PASSWORD=YourStrong!Password
-    ports:
-      - "1433:1433"
-    volumes:
-      - sqldata:/var/opt/mssql
+A sample `docker-compose.yml` can wire the API and SQL Server; see project docs or ARCHITECTURE.md for production notes.
 
-  api:
-    build:
-      context: .
-      dockerfile: BookingService.Api/Dockerfile
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Production
-      - ConnectionStrings__BookingDb=Server=sqlserver;Database=BookingServiceDb;User=sa;Password=YourStrong!Password;TrustServerCertificate=True
-      - Jwt__Key=${JWT_KEY}
-    ports:
-      - "8080:8080"
-    depends_on:
-      - sqlserver
-
-volumes:
-  sqldata:
-```
-
-Run with:
-```bash
-JWT_KEY="YourProductionSecretKey_MinLength32!" docker-compose up -d
-```
-
-### Environment Variables for Production
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ConnectionStrings__BookingDb` | Yes | SQL Server connection string |
-| `Jwt__Key` | Yes | JWT signing key (min 32 characters) |
-| `ASPNETCORE_ENVIRONMENT` | No | Set to `Production` |
+---
 
 ## Troubleshooting
 
-### "JWT Key not configured" error
-- With Aspire: Set `$env:Parameters__jwt_key` before running AppHost
-- Without Aspire: Set `$env:Jwt__Key` or use `dotnet user-secrets`
-
-### Docker containers not starting
-Ensure Docker Desktop is running and has sufficient resources allocated.
-
-### Database connection failed
-- With Aspire: Check the Aspire Dashboard for SQL Server container status
-- Without Aspire: Ensure LocalDB is installed (`sqllocaldb info`)
-
-### Port already in use
-Change ports in `Properties/launchSettings.json` or stop conflicting services.
+- **JWT Key not configured:** Set the env var or user-secret as above for your run mode (Aspire vs standalone).
+- **Docker / SQL:** With Aspire, ensure the SQL container is running (dashboard). Without Docker, use LocalDB and check `appsettings.json` connection string.
+- **Port in use:** Adjust ports in `Properties/launchSettings.json` or stop the conflicting app.

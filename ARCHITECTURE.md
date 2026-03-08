@@ -4,310 +4,131 @@ This document explains the architectural patterns, design decisions, and technic
 
 ## Solution Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Aspire AppHost                                  │
-│                       (Orchestration & Discovery)                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                    ┌─────────────────┴─────────────────┐
-                    ▼                                   ▼
-        ┌───────────────────┐               ┌─────────────────────────────────┐
-        │   SQL Server      │               │       BookingService.Api        │
-        │   Container       │◄──────────────│  ┌───────────────────────────┐  │
-        └───────────────────┘               │  │  BackgroundService        │  │
-                                            │  │  (BookingExpiryService)   │  │
-                                            │  └───────────────────────────┘  │
-                                            └─────────────────────────────────┘
-                                                          │
-                              ┌────────────────────────────┼────────────────────────────┐
-                              ▼                            ▼                            ▼
-                    ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
-                    │   Application   │          │  Infrastructure │          │     Worker      │
-                    │   (Services,    │          │   (EF Core,     │          │  (Class Lib,    │
-                    │    DTOs)        │          │    DbContext)   │          │   Background)   │
-                    └─────────────────┘          └─────────────────┘          └─────────────────┘
-                              │                            │
-                              └──────────────┬─────────────┘
-                                             ▼
-                                   ┌─────────────────┐
-                                   │      Core       │
-                                   │   (Entities,    │
-                                   │    Enums)       │
-                                   └─────────────────┘
+The application follows a **Controller → Application Service → DbContext** flow. There is no separate repository layer: **EF Core** provides Unit of Work and data access. This keeps the stack simple and aligns with many modern .NET architectures (e.g. Vertical Slice). A repository abstraction may be introduced later if the project grows (e.g. multiple data sources or need to swap persistence).
+
+```mermaid
+flowchart TB
+  API[API]
+  App[Application]
+  Infra[Infrastructure]
+  DB[(Database)]
+  API --> App
+  App --> Infra
+  Infra --> DB
 ```
 
-**Note**: The Worker project is a **class library** (not a separate executable). The `BookingExpiryService` 
-background task runs **inside the API process** as a hosted service. This is a single deployable unit.
+- **API** (BookingService.Api): HTTP endpoints, authentication, global exception handling. The **Worker** (BookingExpiryService) runs in-process as a hosted service.
+- **Application** (BookingService.Application): Business logic, service interfaces, DTOs, validators. Uses `BookingDbContext` from Infrastructure.
+- **Infrastructure** (BookingService.Infrastructure): EF Core DbContext, configurations, migrations.
+- **Core** (BookingService.Core): Domain entities, enums, domain exceptions, options classes.
+
+**Orchestration**: When running with .NET Aspire (AppHost), Aspire starts the API and a SQL Server container and wires configuration (e.g. connection strings, JWT key).
 
 ## Layer Responsibilities
 
 | Layer | Project | Responsibility |
 |-------|---------|----------------|
-| **Presentation** | BookingService.Api | HTTP endpoints, authentication, request/response handling |
-| **Application** | BookingService.Application | Business logic, service interfaces, DTOs |
-| **Domain** | BookingService.Core | Entities, enums, domain rules, options classes |
-| **Infrastructure** | BookingService.Infrastructure | Data access, EF Core DbContext, migrations |
-| **Worker** | BookingService.Worker | Background tasks (class library, runs inside API) |
-| **Orchestration** | BookingService.AppHost | Aspire host, container management, service wiring |
+| **Presentation** | BookingService.Api | HTTP, auth, request/response, global exception filter (ProblemDetails) |
+| **Application** | BookingService.Application | Business logic, services, DTOs, FluentValidation |
+| **Domain** | BookingService.Core | Entities, enums, domain exceptions, options |
+| **Infrastructure** | BookingService.Infrastructure | DbContext, EF Core, migrations |
+| **Worker** | BookingService.Worker | Background expiry of pending bookings (in-process) |
+| **Orchestration** | BookingService.AppHost | Aspire host, containers, service wiring |
+
+## Domain and API Contract
+
+### Domain Exceptions
+
+Business and validation failures are expressed with **domain exceptions** so the API can map them to consistent HTTP status codes and **RFC 7807 ProblemDetails**:
+
+| Exception | HTTP | Use |
+|-----------|------|-----|
+| `NotFoundException` | 404 | Entity not found (user, event, booking, ticket type) |
+| `ConflictException` | 409 | Duplicate or conflict (e.g. email already registered) |
+| `CapacityExceededException` | 409 | Not enough tickets available |
+| `ValidationException` | 400 | Business rule or validation failure |
+| `InvalidBookingStateException` | 400 | Invalid state transition (e.g. confirm already cancelled) |
+| `UnauthorizedAccessException` | 403 | e.g. cancel another user’s booking |
+
+The global **ProblemDetailsExceptionFilter** in the API maps these (and `DbUpdateConcurrencyException` → 409) to ProblemDetails with `type`, `title`, `detail`, `status`, `instance`, and `traceId`.
+
+### Concurrency
+
+- **RowVersion** on `Booking` and `TicketType` enables optimistic concurrency. When a concurrent update is detected, EF Core throws `DbUpdateConcurrencyException`.
+- The API returns **409 Conflict** with a clear message (e.g. “The resource was modified by another request. Please refresh and try again.”). There is **no server-side retry**: the **client** decides whether to refresh and retry or show the conflict to the user.
+
+### DTO Separation
+
+Controllers never expose domain entities. All responses and request bodies use **DTOs** (e.g. `BookingDto`, `CreateBookingRequest`). The Application layer maps between entities and DTOs.
+
+### Logging and Correlation
+
+Structured logging is used at service boundaries (e.g. BookingCreated, BookingConfirmed, BookingCancelled) with properties such as **BookingId**, **UserId**, **EventId**. A **RequestLoggingScopeMiddleware** adds **TraceId** and **RequestId** to the logging scope for each request so logs can be correlated in production.
 
 ## Key Architectural Decisions
 
-### 1. Clean Architecture with Vertical Slices
+### 1. Thin Controllers, Rich Services
 
-**Decision**: Organize code by feature within a layered architecture.
+Controllers handle only HTTP (routing, auth, calling services). All business logic lives in Application services. Exceptions are handled by the global filter; controllers do not catch domain exceptions.
 
-**Rationale**:
-- Clear separation of concerns between layers
-- Domain entities are independent of infrastructure
-- Easy to test business logic in isolation
-- Services are grouped by domain concept (Bookings, Events, Users)
+### 2. Strategy Pattern for Policy Decisions
 
-**Trade-offs**:
-- More projects to manage
-- Some boilerplate for simple CRUD operations
+`BookingPolicyService` is separate from `BookingsService`. It evaluates cancellation and refund rules (e.g. refund allowed only if cancelled more than 24h before event). This keeps policy logic testable and easy to change.
 
-### 2. Thin Controllers, Rich Services
+### 3. Time Abstraction via ITimeProvider
 
-**Decision**: Controllers only handle HTTP concerns; all business logic lives in Application services.
+`ITimeProvider` is injected instead of using `DateTimeOffset.UtcNow` directly. This allows deterministic unit tests for expiry, refund windows, and booking timeout.
 
-**Rationale**:
-- Controllers become simple request/response mappers
-- Business logic is reusable and testable
-- Single Responsibility Principle adherence
+### 4. Configuration via IOptions
 
-**Example**:
-```csharp
-// Controller - thin, only HTTP concerns
-[HttpPost("{id}/cancel")]
-public async Task<ActionResult<BookingDto>> Cancel(Guid id)
-{
-    var booking = await _bookingsService.Cancel(id, userId);
-    return booking == null ? NotFound() : Ok(booking);
-}
+Strongly-typed options (e.g. `BookingOptions`, `JwtOptions`) are bound from configuration. Timeout, refund cutoff, and expiry poll interval are centralized and testable.
 
-// Service - contains business logic
-public async Task<BookingDto?> Cancel(Guid bookingId, Guid userId)
-{
-    var booking = await _context.Bookings.FindAsync(bookingId);
-    var result = _policyService.EvaluateCancellation(booking, evt);
-    // ... business logic
-}
-```
+### 5. Optimistic Concurrency with RowVersion
 
-### 3. Strategy Pattern for Policy Decisions
-
-**Decision**: Separate `BookingPolicyService` from `BookingsService`.
-
-**Rationale**:
-- Cancellation/refund rules are complex and change independently
-- Policy logic is isolated and easily testable
-- Follows Single Responsibility Principle
-- Enables future extension (different policies per event type)
-
-**Structure**:
-```
-BookingsService          →  Orchestrates booking operations
-BookingPolicyService     →  Evaluates business rules (refund eligibility, etc.)
-```
-
-### 4. Time Abstraction via ITimeProvider
-
-**Decision**: Inject `ITimeProvider` instead of using `DateTimeOffset.UtcNow` directly.
-
-**Rationale**:
-- Enables deterministic unit testing
-- Time-dependent logic can be tested without waiting
-- Consistent time source across the application
-
-**Implementation**:
-```csharp
-public interface ITimeProvider
-{
-    DateTimeOffset UtcNow { get; }
-}
-
-// Production: SystemTimeProvider returns real time
-// Tests: Mock returns controlled time values
-```
-
-### 5. Configuration via IOptions Pattern
-
-**Decision**: Use strongly-typed options classes bound from configuration.
-
-**Rationale**:
-- Type-safe configuration access
-- Validation at startup
-- Easy to mock in tests
-- Centralized in `BookingOptions` class
-
-**Consolidated Options**:
-```csharp
-public class BookingOptions
-{
-    public int TimeoutMinutes { get; set; } = 15;
-    public int RefundCutoffHours { get; set; } = 24;
-    public int ExpiryPollIntervalMinutes { get; set; } = 1;
-}
-```
+`Booking` and `TicketType` have a `RowVersion` property configured as a concurrency token. This prevents lost updates when two requests update the same booking or ticket type; one receives 409 and can retry or inform the user.
 
 ### 6. DTOs for API Boundaries
 
-**Decision**: Never expose domain entities directly through API endpoints.
-
-**Rationale**:
-- Decouples internal model from API contract
-- Prevents over-posting attacks
-- Allows API to evolve independently of domain
-- Controls exactly what data is serialized
-
-**Pattern**:
-```
-Entity (Core)  →  Service  →  DTO (Application)  →  Controller  →  HTTP Response
-```
-
-### 7. Optimistic Concurrency with RowVersion
-
-**Decision**: Use SQL Server `rowversion` for concurrency control.
-
-**Rationale**:
-- Prevents lost updates in concurrent scenarios
-- Automatic conflict detection by EF Core
-- No explicit locking required
-
-**Implementation**:
-```csharp
-public class Booking
-{
-    public byte[] RowVersion { get; private set; }
-}
-
-// EF Core configuration
-entity.Property(e => e.RowVersion).IsRowVersion();
-```
+Entity (Core) → Service (maps to DTO) → Controller → HTTP. The API contract is stable and does not leak domain internals.
 
 ## Infrastructure Decisions
 
-### 8. .NET Aspire for Orchestration
+### Aspire for Orchestration
 
-**Decision**: Use Aspire for local development and container orchestration.
+Aspire is used for local development and container orchestration: SQL Server container, connection strings, JWT key injection, OpenTelemetry, health checks, and dashboard.
 
-**Rationale**:
-- Simplified local development setup
-- Automatic SQL Server container management
-- Built-in observability (OpenTelemetry)
-- Service discovery for microservices readiness
-- Health checks out of the box
+### Secrets via Environment Variables
 
-**Benefits**:
-- One command to start entire stack
-- Consistent environment across team
-- Dashboard for monitoring and debugging
+No secrets in config files. JWT key and DB credentials are provided via environment variables or Aspire parameters (and user-secrets in development).
 
-### 9. Secrets via Environment Variables
+### Background Service for Booking Expiry
 
-**Decision**: No secrets in configuration files; use environment variables and Aspire parameters.
+`BookingExpiryService` runs inside the API process as an `IHostedService`. It periodically finds pending bookings past their expiration and releases reserved tickets. For higher scale, this could be moved to a separate worker or message-driven process.
 
-**Rationale**:
-- Secrets never committed to source control
-- Works consistently across environments
-- Aspire parameters provide secure injection
-- Compatible with container orchestration (K8s, Docker)
+### JWT Bearer Authentication
 
-**Hierarchy**:
-```
-Environment Variables  →  Aspire Parameters  →  User Secrets (dev only)
-```
+Stateless JWT tokens for API auth. Short token lifetime and signing key from environment.
 
-### 10. Background Service for Booking Expiry
+### Central Package Management
 
-**Decision**: Use `IHostedService` running in the API process.
-
-**Rationale**:
-- Simple deployment (single process)
-- Shares DbContext and services
-- Appropriate for current scale
-- Can be extracted to separate worker if needed
-
-**Trade-offs**:
-- Runs in same process as API (resource sharing)
-- For high scale, consider separate worker service or message queue
-
-### 11. JWT Bearer Authentication
-
-**Decision**: Stateless JWT tokens for API authentication.
-
-**Rationale**:
-- Stateless - no session storage required
-- Self-contained claims for authorization
-- Standard approach for REST APIs
-- Works well with microservices
-
-**Security Considerations**:
-- Short token lifetime (60 minutes default)
-- Signing key injected via environment variable
-- HTTPS enforced in production
-
-### 12. Central Package Management
-
-**Decision**: Use `Directory.Packages.props` for NuGet version management.
-
-**Rationale**:
-- Single source of truth for package versions
-- Prevents version drift across projects
-- Easier security updates
-- Cleaner `.csproj` files
+`Directory.Packages.props` centralizes NuGet package versions across the solution.
 
 ## Testing Strategy
 
-### Unit Tests
-- Test services in isolation with mocked dependencies
-- Use `ITimeProvider` mock for time-dependent tests
-- Use `IOptions.Create()` for configuration
-
-### Integration Tests
-- Use `WebApplicationFactory` for API tests
-- In-memory database for fast execution
-- Test full request/response cycle
+- **Unit tests**: Domain entities (Booking, TicketType) and policy (BookingPolicyService) in isolation with mocked time and options.
+- **Integration tests**: `BookingsService` with in-memory EF database; tests for create, confirm, cancel, capacity exceeded, and invalid state transitions (e.g. confirm when already cancelled).
 
 ## API Features
 
-### Input Validation
-- **FluentValidation** for declarative request validation
-- Validators in `BookingService.Application.Validators`
-- Automatic validation via `FluentValidationAutoValidation`
-- Returns 400 Bad Request with detailed error messages
-
-### Pagination
-- All list endpoints support pagination
-- Query parameters: `?page=1&pageSize=10`
-- Response includes: `Items`, `Page`, `PageSize`, `TotalCount`, `TotalPages`, `HasNextPage`, `HasPreviousPage`
-- Maximum page size: 100 (enforced server-side)
-
-### Security
-- Ownership checks on booking retrieval (users can only see their own bookings)
-- Role-based authorization (Customer, Organizer, Admin)
-- JWT token validation with configurable expiration
+- **Validation**: FluentValidation for request DTOs; validation errors returned as **400** with ProblemDetails.
+- **Pagination**: List endpoints support `?page=1&pageSize=20` (e.g. `/api/bookings`, `/api/events`). Response includes `Items`, `Page`, `PageSize`, `TotalCount`, `TotalPages`, `HasNextPage`, `HasPreviousPage`. Maximum page size is enforced server-side.
+- **Security**: Ownership checks (users see only their bookings), role-based authorization (Customer, Organizer, Admin), JWT validation.
 
 ## Future Considerations
 
-### Scalability Path
-1. **Current**: Single API process with background worker
-2. **Next**: Separate worker service with message queue
-3. **Future**: Event-driven architecture with multiple services
-
-### Potential Enhancements
-- Redis for distributed caching
-- Message queue for async operations
-- Event sourcing for booking history
-- API versioning for backward compatibility
-- Rate limiting for API protection
+- **Scalability**: Separate worker for expiry, message queue, or event-driven design.
+- **Enhancements**: Caching, API versioning, rate limiting.
 
 ## Summary
 
-The architecture prioritizes:
-- **Maintainability**: Clear separation of concerns, testable components
-- **Security**: No hardcoded secrets, JWT authentication, ownership checks
-- **Developer Experience**: Aspire for easy setup, comprehensive documentation
-- **Flexibility**: Abstractions allow future changes without major rewrites
-- **Reliability**: Input validation, pagination, proper error handling
+The architecture prioritizes **maintainability** (clear layers, testable services), **security** (no hardcoded secrets, JWT, ownership checks), **developer experience** (Aspire, documentation), and **reliability** (validation, ProblemDetails, 409 for concurrency, structured logging with correlation).

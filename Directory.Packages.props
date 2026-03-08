@@ -26,6 +26,7 @@
 
     <!-- Microsoft Extensions -->
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.9" />
 
     <!-- Testing -->
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />

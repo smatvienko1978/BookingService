@@ -17,6 +17,7 @@
 // =============================================================================
 
 using System.Text;
+using BookingService.Api.Filters;
 using BookingService.Worker;
 using BookingService.Application.Interfaces;
 using BookingService.Application.Services;
@@ -36,7 +37,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ProblemDetailsExceptionFilter>();
+});
+builder.Services.AddProblemDetails();
+builder.Services.AddScoped<ProblemDetailsExceptionFilter>();
 
 // Register FluentValidation validators from the Application assembly
 // This enables automatic request validation before reaching controllers
@@ -166,6 +172,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseMiddleware<BookingService.Api.Middleware.RequestLoggingScopeMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();

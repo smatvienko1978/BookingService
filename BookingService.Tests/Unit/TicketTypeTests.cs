@@ -1,4 +1,5 @@
 using BookingService.Core.Entities;
+using BookingService.Core.Exceptions;
 using FluentAssertions;
 
 namespace BookingService.Tests.Unit;
@@ -40,7 +41,7 @@ public class TicketTypeTests
 
         var act = () => ticketType.Reserve(15);
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*Not enough*");
+        act.Should().Throw<CapacityExceededException>().WithMessage("*Not enough*");
     }
 
     [Fact]

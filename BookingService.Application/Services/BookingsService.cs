@@ -2,9 +2,11 @@ using BookingService.Application.DTOs;
 using BookingService.Application.Interfaces;
 using BookingService.Core.Entities;
 using BookingService.Core.Enums;
+using BookingService.Core.Exceptions;
 using BookingService.Core.Request;
 using BookingService.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace BookingService.Application.Services;
@@ -26,12 +28,14 @@ public class BookingsService(
     BookingDbContext context,
     IOptions<BookingOptions> options,
     IBookingPolicyService policyService,
-    ITimeProvider timeProvider) : IBookingsService
+    ITimeProvider timeProvider,
+    ILogger<BookingsService> logger) : IBookingsService
 {
     private readonly BookingDbContext _context = context ?? throw new ArgumentNullException(nameof(context));
     private readonly BookingOptions _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
     private readonly IBookingPolicyService _policyService = policyService ?? throw new ArgumentNullException(nameof(policyService));
     private readonly ITimeProvider _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+    private readonly ILogger<BookingsService> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>
     /// Creates a new pending booking for the specified user.
@@ -49,16 +53,16 @@ public class BookingsService(
     public async Task<BookingDto> Create(Guid userId, CreateBookingRequest request, CancellationToken cancellationToken = default)
     {
         if (request.Items.Count == 0)
-            throw new ArgumentException("At least one ticket item is required.", nameof(request));
+            throw new ValidationException("At least one ticket item is required.");
 
         var user = await _context.Users.FindAsync([userId], cancellationToken)
-            ?? throw new InvalidOperationException($"User '{userId}' not found.");
+            ?? throw new NotFoundException($"User '{userId}' not found.");
 
         // Load event with ticket types for availability checking
         var evt = await _context.Events
             .Include(e => e.TicketTypes)
             .FirstOrDefaultAsync(e => e.Id == request.EventId, cancellationToken)
-            ?? throw new InvalidOperationException($"Event '{request.EventId}' not found.");
+            ?? throw new NotFoundException($"Event '{request.EventId}' not found.");
 
         // Calculate expiration time based on configured timeout
         var now = _timeProvider.UtcNow;
@@ -71,13 +75,14 @@ public class BookingsService(
         foreach (var item in request.Items)
         {
             var ticketType = evt.TicketTypes.FirstOrDefault(t => t.Id == item.TicketTypeId)
-                ?? throw new InvalidOperationException($"Ticket type '{item.TicketTypeId}' not found for event.");
+                ?? throw new NotFoundException($"Ticket type '{item.TicketTypeId}' not found for event.");
             booking.AddItem(ticketType, item.Quantity);
         }
 
         _context.Bookings.Add(booking);
         await _context.SaveChangesAsync(cancellationToken);
 
+        _logger.LogInformation("BookingCreated BookingId={BookingId} UserId={UserId} EventId={EventId}", booking.Id, userId, request.EventId);
         return MapToDto(booking);
     }
 
@@ -139,20 +144,22 @@ public class BookingsService(
                 .ThenInclude(e => e.TicketTypes)
             .FirstOrDefaultAsync(b => b.Id == bookingId, cancellationToken);
 
-        ArgumentNullException.ThrowIfNull(booking, nameof(booking));
+        if (booking == null)
+            throw new NotFoundException($"Booking '{bookingId}' not found.");
 
         var now = _timeProvider.UtcNow;
         
         if (booking.Status != BookingStatus.Pending)
-            throw new InvalidOperationException("Booking cannot be confirmed.");
+            throw new InvalidBookingStateException("Booking cannot be confirmed in its current state.");
 
         if (booking.ExpiresAt < now)
-            throw new InvalidOperationException("Booking expired.");
+            throw new InvalidBookingStateException("Booking has expired.");
 
         // Confirm moves tickets from Reserved to Sold state
         booking.Confirm(now);
 
         await _context.SaveChangesAsync(cancellationToken);
+        _logger.LogInformation("BookingConfirmed BookingId={BookingId}", bookingId);
     }
 
     /// <summary>
@@ -173,7 +180,7 @@ public class BookingsService(
             .Include(b => b.Items)
             .Include(b => b.Event)
                 .ThenInclude(e => e.TicketTypes)
-            .FirstOrDefaultAsync(b => b.Id == bookingId, cancellationToken) ?? throw new InvalidOperationException($"Booking '{bookingId}' not found.");
+            .FirstOrDefaultAsync(b => b.Id == bookingId, cancellationToken) ?? throw new NotFoundException($"Booking '{bookingId}' not found.");
         
         // Security: Users can only cancel their own bookings
         if (booking.UserId != userId)
@@ -183,7 +190,7 @@ public class BookingsService(
         var result = _policyService.EvaluateCancellation(booking, booking.Event);
 
         if (!result.Allowed)
-            throw new InvalidOperationException(result.DenialReason ?? "Cancellation not allowed.");
+            throw new ValidationException(result.DenialReason ?? "Cancellation not allowed.");
 
         var now = _timeProvider.UtcNow;
         booking.Cancel(now, reason ?? "User requested cancellation");
@@ -205,6 +212,7 @@ public class BookingsService(
         }
 
         await _context.SaveChangesAsync(cancellationToken);
+        _logger.LogInformation("BookingCancelled BookingId={BookingId} UserId={UserId}", bookingId, userId);
         return MapToDto(booking);
     }
 

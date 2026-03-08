@@ -1,3 +1,5 @@
+using BookingService.Core.Exceptions;
+
 namespace BookingService.Core.Entities;
 
 /// <summary>
@@ -108,12 +110,12 @@ public class TicketType
     public void Reserve(int quantity)
     {
         if (!IsActive)
-            throw new InvalidOperationException("Inactive ticket type.");
+            throw new ValidationException("Inactive ticket type.");
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity, nameof(quantity));
 
         if (Available < quantity)
-            throw new InvalidOperationException("Not enough tickets.");
+            throw new CapacityExceededException("Not enough tickets.");
 
         ReservedQuantity += quantity;
     }

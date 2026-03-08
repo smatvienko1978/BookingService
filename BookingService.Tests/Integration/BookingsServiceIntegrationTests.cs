@@ -3,11 +3,14 @@ using BookingService.Application.Interfaces;
 using BookingService.Application.Services;
 using BookingService.Core.Entities;
 using BookingService.Core.Enums;
+using BookingService.Core.Exceptions;
 using BookingService.Core.Request;
 using BookingService.Infrastructure.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace BookingService.Tests.Integration;
 
@@ -36,8 +39,9 @@ public class BookingsServiceIntegrationTests : IDisposable
         });
         var timeProvider = new SystemTimeProvider();
         var policyService = new BookingPolicyService(bookingOptions, timeProvider);
+        var logger = new Mock<ILogger<BookingsService>>().Object;
 
-        _sut = new BookingsService(_context, bookingOptions, policyService, timeProvider);
+        _sut = new BookingsService(_context, bookingOptions, policyService, timeProvider, logger);
 
         _testUser = new User
         {
@@ -135,7 +139,7 @@ public class BookingsServiceIntegrationTests : IDisposable
 
         Func<Task> act = async () => await _sut.Create(_testUser.Id, request);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Not enough*");
+        await act.Should().ThrowAsync<BookingService.Core.Exceptions.CapacityExceededException>().WithMessage("*Not enough*");
     }
 
     [Fact]
@@ -188,6 +192,18 @@ public class BookingsServiceIntegrationTests : IDisposable
         cancelled.Refund.Should().NotBeNull();
         cancelled.Refund!.Amount.Should().Be(300m);
         cancelled.Refund.Status.Should().Be("Completed");
+    }
+
+    [Fact]
+    public async Task Confirm_WhenBookingAlreadyCancelled_ShouldThrowInvalidBookingState()
+    {
+        var request = new CreateBookingRequest(_testEvent.Id, [new BookingItemRequest(_vipTicket.Id, 2)]);
+        var booking = await _sut.Create(_testUser.Id, request);
+        await _sut.Cancel(booking.Id, _testUser.Id, "Changed mind");
+
+        var act = async () => await _sut.Confirm(booking.Id);
+
+        await act.Should().ThrowAsync<InvalidBookingStateException>();
     }
 
     [Fact]

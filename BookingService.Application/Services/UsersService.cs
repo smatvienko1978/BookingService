@@ -1,6 +1,7 @@
 using BookingService.Application.DTOs;
 using BookingService.Application.Interfaces;
 using BookingService.Core.Entities;
+using BookingService.Core.Exceptions;
 using BookingService.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,7 +27,7 @@ public class UsersService(BookingDbContext context, ITimeProvider timeProvider) 
     public async Task<UserDto> Create(CreateUserRequest request, CancellationToken cancellationToken = default)
     {
         if (await _context.Users.AnyAsync(u => u.Email == request.Email, cancellationToken))
-            throw new InvalidOperationException("Email already registered.");
+            throw new ConflictException("Email already registered.", "DuplicateEmail");
 
         var user = new User
         {

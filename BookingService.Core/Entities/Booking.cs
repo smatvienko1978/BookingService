@@ -1,4 +1,5 @@
 using BookingService.Core.Enums;
+using BookingService.Core.Exceptions;
 
 namespace BookingService.Core.Entities;
 
@@ -98,7 +99,7 @@ public class Booking
     public void AddItem(TicketType ticketType, int quantity)
     {
         if (Status != BookingStatus.Pending)
-            throw new InvalidOperationException("Cannot modify confirmed or cancelled booking.");
+            throw new InvalidBookingStateException("Cannot modify confirmed or cancelled booking.");
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity, nameof(quantity));
 
@@ -122,11 +123,11 @@ public class Booking
     public void Confirm(DateTimeOffset now)
     {
         if (Status != BookingStatus.Pending)
-            throw new InvalidOperationException();
+            throw new InvalidBookingStateException("Booking cannot be confirmed in its current state.");
         
         // Cannot confirm an expired booking
         if (ExpiresAt < now)
-            throw new InvalidOperationException();
+            throw new InvalidBookingStateException("Booking has expired.");
         
         // Move all reserved tickets to sold status
         foreach (var item in _items)
@@ -150,7 +151,7 @@ public class Booking
     public void Cancel(DateTimeOffset now, string reason)
     {
         if (Status is BookingStatus.Cancelled or BookingStatus.Expired)
-            throw new InvalidOperationException();
+            throw new InvalidBookingStateException("Booking is already cancelled or expired.");
 
         // Return tickets based on current status
         foreach (var item in _items)
@@ -177,11 +178,11 @@ public class Booking
     public void Expire(DateTimeOffset now)
     {
         if (Status != BookingStatus.Pending)
-            throw new InvalidOperationException();
+            throw new InvalidBookingStateException("Only pending bookings can expire.");
         
         // Safety check: don't expire bookings that haven't actually timed out
         if (ExpiresAt > now)
-            throw new InvalidOperationException();
+            throw new InvalidBookingStateException("Booking has not yet reached expiration time.");
         
         // Release all reserved tickets back to available
         foreach (var item in _items)
