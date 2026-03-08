@@ -7,7 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Folder Include="Respond\" />
+    <Compile Remove="Respond\**" />
+    <EmbeddedResource Remove="Respond\**" />
+    <None Remove="Respond\**" />
   </ItemGroup>
 
   <ItemGroup>
